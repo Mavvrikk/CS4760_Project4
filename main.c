@@ -63,28 +63,37 @@ void forker (int* totalLaunched, int* PCB_INDEX, PCB * processTable, messageQ ms
 	}
       else if (pid == 0)
 	{
-        // CALL TO EXEC CHILD PROCESS
-        /*
-        char* args[]={"./worker",0};
-        execlp(args[0],args[0],args[1]);
-        */
-        
+        //char* args[]={"./worker",0};
+        //execlp(args[0],args[0],args[1]);
         /*CONTENTS OF WORKER FILE*/
         messageQ buff;
         buff.mtype = getppid();
-        buff.quantum = 10;
-        if(msgrcv(message_queue,&msg,sizeof(msg)-sizeof(long),getpid(),0)== -1){
-            perror("MESSAGE RECEIVED FAILED");
-            exit(1);
+        srand(time(NULL)*getpid());
+        int TaskToDo = rand() % 100;
+
+
+        while(Terminate==0){
+            printf("WAITING ON MSG FROM PARENT! MY PID IS %d PARENTS PID IS %d",getpid(),getppid());
+            if(msgrcv(message_queue,&msg,sizeof(msg)-sizeof(long),getpid(),0)== -1){
+                perror("MESSAGE RCV FAILED");
+                exit(1);
+            }
+            printf("   MESSAGE RECIEVED FROM PARENT: QUANTUM RECIEVED = %d\n", msg.quantum);
+            if (TaskToDo < 5){  // Process terminates on a 0-5
+                buff.quantum = 2500
+                Terminate = 1;
+            }
+            else if (TaskToDo > 85){ // Process has interrupt on 86-99
+                buff.quantum = -2500
+            }
+            else // TaskToDo = 5-85 and uses full time quantum
+                buff.quantum = 5000
+            if(msgsnd(message_queue,&buff,sizeof(buff)-sizeof(long),0) == -1){
+                perror("MESSAGE SND FAILED");
+                exit(1);
+            }
         }
-	    printf("MESSAGE RECEIVED FROM PARENT: QUANTUM RECEIVED = %d\n",msg.quantum);
-	    
-	    if(msgsnd(message_queue,&buff,sizeof(buff)-sizeof(long),0)==-1){
-        perror("Failed to send Message");
-        exit(1);
-    }
-	    exit(0);
-        
+        exit(0);
 	}
       else if (pid > 0)
 	{
@@ -93,7 +102,7 @@ void forker (int* totalLaunched, int* PCB_INDEX, PCB * processTable, messageQ ms
   processTable[*PCB_INDEX].pid = pid;
   processTable[*PCB_INDEX].startSeconds = *shmSec;
   processTable[*PCB_INDEX].startNano = *shmNano;
-  
+ 
   // Up Launch Count & PCB_INDEX Count
   *PCB_INDEX += 1;
   *totalLaunched +=1;
@@ -101,6 +110,15 @@ void forker (int* totalLaunched, int* PCB_INDEX, PCB * processTable, messageQ ms
  return;
 	}
     }
+}
+
+bool PCB_isEmpty(PCB *processTable){
+int i = 0;
+for (i; i < 18; i++){
+	if (processTable[i].occupied !=0)
+		return false;
+	}
+return true;
 }
 
 bool checkifChildTerminated(int status, PCB *processTable, int size)
@@ -127,7 +145,7 @@ processTable[i].startNano = 0;
 }
 }
 
-void initializeReadyQueue(int* READY_QUEUE, int SIZE){
+void initializeReadyQueue(pid_t* READY_QUEUE, int SIZE){
     int i = 0;
     for(i;i<SIZE;i++){
         READY_QUEUE[i] = -1;
@@ -143,14 +161,26 @@ int PCB_Has_Room(struct PCB *processTable){
     return -1;
 }
 
-void INSERT_INTO_QUEUE (int* READY_QUEUE, struct PCB *processTable, int* PCB_INDEX){
-    int i = 0;
+void INSERT_INTO_QUEUE (pid_t* READY_QUEUE, struct PCB *processTable, int* PCB_INDEX){ 
+ int i = 0;
     for (i; i<18; i++){
-        if (READY_QUEUE[i] == -1) // First available spot in READY_QUEUE, place PID of process HERE
-            READY_QUEUE[i] = processTable[*PCB_INDEX].pid;
+        if (READY_QUEUE[i] == -1){ // First available spot in READY_QUEUE, place PID of process HERE
+            READY_QUEUE[i] = processTable[*PCB_INDEX-1].pid;
+	   
+	    return;
+		}
     }
 }
 
+int GRAB_PCBINDEX(pid_t* READY_QUEUE, struct PCB *processTable){
+    int i = 0;
+    for (i; i<19; i++){
+        if (processTable[i].pid == READY_QUEUE [0])
+        return i;
+    }
+    printf("ERROR! PID NOT IN QUEUE FOR SOME REASON?");
+    exit(0);
+}
 
 void printStruct (struct PCB *processTable,int* shmSec,int* shmNano, FILE* fLog)
 {
@@ -204,18 +234,16 @@ int main (int argc, char **argv)
   
     //INITIALIZE ALL VARIABLES
   int totalLaunched = 0;
-  int simulLimit = 1;	
   int PCB_INDEX = 0;	
   int status; 
-  int exCess;
   int *shmSec;
   int *shmNano;
   PCB processTable[18];
-  int READY_QUEUE[18];
+  pid_t READY_QUEUE[18];
   messageQ msg;
   messageQ rcvbuf;
   bool initialLaunch = false;
-  
+  int MaxToLaunch = 5;
  //create file for LOGFILE
  FILE* fLog;
  fLog = fopen("LogFile", "w");
@@ -260,28 +288,59 @@ int main (int argc, char **argv)
  // initialize struct to 0
  initializeStruct(processTable);
  initializeReadyQueue(READY_QUEUE,18);
+
    while(stillChildrenRunning){
   // FORK CHILDREN 
     incrementClock(shmSec,shmNano, 2000);
-    if (*shmNano >= timeLastChildwasLaunchedNano + 2000 && *shmSec >= timeLastChildwasLaunchedSec){// if enough time has passed to launch a new child, do it
-        timeLastChildwasLaunchedNano = *shmNano; // reset counter variables
+    if (*shmNano >= timeLastChildwasLaunchedNano + 2000 && *shmSec >= timeLastChildwasLaunchedSec && totalLaunched < MaxToLaunch ){// if enough time has passed to launch a new child, do it
+      	timeLastChildwasLaunchedNano = *shmNano; // reset counter variables
         timeLastChildwasLaunchedSec = *shmSec;
         
         PCB_INDEX = PCB_Has_Room(processTable);
         if (PCB_INDEX >= 0){ // If theres an unoccupied slot in PCB, Launcha child and place it in Ready Queue
             forker (&totalLaunched, &PCB_INDEX, processTable, msg, shmSec, shmNano, message_queue);
-            INSERT_INTO_QUEUE (READY_QUEUE, processTable ,&PCB_INDEX);
-        }
+	}
+           INSERT_INTO_QUEUE (READY_QUEUE, processTable ,&PCB_INDEX); // CHILD HAS BEEN INSERTED INTO FIRST AVAILABLE QUEUE SLOT
+
     }
+    // NOW THAT CHILDREN HAVE BEEN CREATED AND ARE IN QUEUE, RUN QUEUE
+    //STEP 1 GRAB PCB INDEX TO DETERMINE RUNNING STATUS
+    PCB_INDEX = GRAB_PCBINDEX(READY_QUEUE, processTable);
+   // printf("PCB INDEX: %d  READY_QUEUE[0]: %d  OCCUPIED: %d \n",PCB_INDEX,READY_QUEUE[0],processTable[PCB_INDEX].occupied );
+    if(READY_QUEUE[0] != -1 && processTable[PCB_INDEX].occupied == 1){ // IF THE FIRST READYQUEUE ISNT EMPTY AND ITS READY TO RUN
+        msg.mtype = READY_QUEUE[0]; // sets message type to pid in front of READY_QUEUE
+        msg.quantum = 5000; // gives child Quantum to run
+     printf("SENDING MESSAGE NOW\n");
+        if(msgsnd(message_queue,&msg,sizeof(msg)-sizeof(long),0)==-1){
+            perror("Failed to send Message");
+            exit(1);
+        }
     
-    msg.mtype = processTable[(PCB_INDEX - 1)].pid; // sets message type to pid of last lauched child
-    msg.quantum = 5000; // gives child Quantum to run
+    if(msgrcv(message_queue,&rcvbuf,sizeof(rcvbuf)-sizeof(long),getpid(),0)== -1){
+            perror("MESSAGE RECEIVED FAILED");
+            exit(1);
+        }
+        
+    printf("MESSAGE RECEIVED FROM CHILD: QUANTUM RECEIVED = %d\n",rcvbuf.quantum);
+// CHANGE READY_QUEUE BY MOVING [0] TO THE BACK
+	int z = 0;
+	for (z;z<18;z++){
+		if(READY_QUEUE[z + 1] != -1){
+			//nah
+	pid_t temp = READY_QUEUE[z];
+	READY_QUEUE[z] = READY_QUEUE[z + 1];
+	READY_QUEUE[z + 1] = temp;
+
+	}
+}
+   printf("READYING PID: %d FOR EXECUTION \n", READY_QUEUE[0]);
+    }
     
     checkifChildTerminated(status, processTable, 19);
     
     printStruct (processTable, shmSec, shmNano, fLog);
     
-    if (totalLaunched == 5)
+    if (PCB_isEmpty(processTable) == true)
             stillChildrenRunning = false;
     }
     
@@ -306,7 +365,3 @@ for (i;i<20;i++){
   }
   return (0);
 }
-
-
-
-
